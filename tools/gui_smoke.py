@@ -16,7 +16,7 @@ def main():
     root.title("QualityScaler - synthetic GUI smoke")
     root.geometry("650x900")
     for size in (8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24):
-        setattr(q, f"bold{size}", q.CTkFont(family="Segoe UI", size=size, weight="bold"))
+        setattr(q, f"bold{size}", q.CTkFont(family=q.platform_services.ui_font_family(), size=size, weight="bold"))
     q.clear_icon = None
     state = q.AppState(q.UserPreferences())
     state.window = root

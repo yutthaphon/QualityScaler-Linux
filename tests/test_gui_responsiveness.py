@@ -26,8 +26,10 @@ class GuiResponsivenessTests(unittest.TestCase):
     def setUp(self):
         self.old_state = q.app_state
         self.root = q.CTk()
-        self.root.withdraw()
-        self.root.geometry("1100x850")
+        # Keep the window mapped at an off-screen position instead of withdrawing
+        # it: Tk allocates a 0x0 backing pixmap for a canvas that is scrolled while
+        # its window is unmapped, and X11 rejects that request with BadValue.
+        self.root.geometry("1100x850+10000+10000")
         for size in (8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24):
             setattr(q, f"bold{size}", q.CTkFont(size=size))
         for name in ("clear_icon", "logo_git", "logo_telegram", "log_icon", "stop_icon", "upscale_icon", "info_icon"):
@@ -120,6 +122,19 @@ class GuiResponsivenessTests(unittest.TestCase):
         self.pump()
         self.assertGreater(widget._visible_start, 700)
         self.assertLessEqual(len(widget.ui_components), widget.WINDOW_SIZE)
+
+    def test_scroll_region_stays_inside_the_x11_pixmap_limit(self):
+        # X11 rejects pixmaps taller than 32767 px, so a long file list must not
+        # emulate its full pixel height with spacers (it used to abort the app).
+        widget = self.make_widget(1000)
+        for position in (0.0, 0.5, 1.0):
+            widget._parent_canvas.yview_moveto(position)
+            self.pump(0.05)
+            height = (widget._top_spacer.winfo_reqheight()
+                      + widget._bottom_spacer.winfo_reqheight()
+                      + widget.WINDOW_SIZE * widget.CARD_HEIGHT)
+            self.assertLessEqual(height, widget.MAX_SCROLL_TRAVEL)
+        self.assertGreater(widget._visible_start, 900)
 
     def test_loaded_preview_updates_existing_labels_and_ratio(self):
         widget = self.make_widget(3)

@@ -6,8 +6,13 @@ __pycache__/
 build/
 dist/
 
+# Virtual environments
+.venv/
+venv/
+
 # Runtime assets (large binaries, downloaded per machine)
-Assets/ffmpeg.exe
-Assets/ffplay.exe
-Assets/ffprobe.exe
+Assets/*.exe
+Assets/ffmpeg
+Assets/ffprobe
+Assets/ffplay
 AI-onnx/*.onnx

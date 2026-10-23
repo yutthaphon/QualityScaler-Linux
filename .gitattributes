@@ -1,0 +1,6 @@
+# This fork targets Ubuntu / Linux: keep every text file LF in the repository so
+# a checkout on Windows and on Linux produce identical bytes.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.onnx binary

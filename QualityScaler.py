@@ -20,7 +20,8 @@ from multiprocessing import (
     Event          as multiprocessing_Event,
     Pool           as multiprocessing_Pool,
     Manager        as multiprocessing_Manager,
-    freeze_support as multiprocessing_freeze_support
+    freeze_support as multiprocessing_freeze_support,
+    set_start_method as multiprocessing_set_start_method
 )
 
 from json import (
@@ -51,21 +52,21 @@ from os.path import (
     exists     as os_path_exists,
     splitext   as os_path_splitext,
     relpath    as os_path_relpath,
-    expanduser as os_path_expanduser,
     getmtime   as os_path_getmtime
 )
 
 from subprocess import (
-    Popen                as subprocess_Popen,
-    PIPE                 as subprocess_PIPE,
-    DEVNULL              as subprocess_DEVNULL,
-    STARTUPINFO          as subprocess_STARTUPINFO,
-    STARTF_USESHOWWINDOW as subprocess_STARTF_USESHOWWINDOW,
-    TimeoutExpired       as subprocess_TimeoutExpired
+    Popen          as subprocess_Popen,
+    PIPE           as subprocess_PIPE,
+    DEVNULL        as subprocess_DEVNULL,
+    TimeoutExpired as subprocess_TimeoutExpired
 )
 
 if sys.platform == "win32":
-    from winotify import Notification as winotify_Notification
+    from subprocess import (
+        STARTUPINFO          as subprocess_STARTUPINFO,
+        STARTF_USESHOWWINDOW as subprocess_STARTF_USESHOWWINDOW,
+    )
     from win32api import SetFileAttributes as win32_SetFileAttributes
     from win32con import (
         FILE_ATTRIBUTE_NOT_CONTENT_INDEXED as win32_FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
@@ -76,18 +77,31 @@ if sys.platform == "win32":
 # Third-party library imports
 from natsort import natsorted
 from psutil import (
-    Process             as psutil_Process,
-    NoSuchProcess       as psutil_NoSuchProcess,
-    IDLE_PRIORITY_CLASS as psutil_IDLE_PRIORITY_CLASS,
-    virtual_memory      as psutil_virtual_memory,
+    Process       as psutil_Process,
+    NoSuchProcess as psutil_NoSuchProcess,
 )
-from onnxruntime import (
-    InferenceSession          as onnxruntime_InferenceSession,
-    SessionOptions            as onnxruntime_SessionOptions,
-    GraphOptimizationLevel    as onnxruntime_GraphOptimizationLevel,
-    get_available_providers   as onnxruntime_get_available_providers,
-    get_version_string        as onnxruntime_get_version_string
-)
+
+import quality_scaler_platform as platform_services
+
+# Expose CUDA libraries installed as pip wheels to ONNX Runtime before it loads
+# its execution providers (no-op on Windows and when they are already findable).
+platform_services.configure_cuda_environment()
+
+try:
+    from onnxruntime import (
+        InferenceSession          as onnxruntime_InferenceSession,
+        SessionOptions            as onnxruntime_SessionOptions,
+        GraphOptimizationLevel    as onnxruntime_GraphOptimizationLevel,
+        get_available_providers   as onnxruntime_get_available_providers,
+        get_version_string        as onnxruntime_get_version_string
+    )
+except ImportError as import_error:
+    raise SystemExit(
+        "ONNX Runtime is not installed.\n"
+        "  Windows: pip install -r requirements.txt\n"
+        "  Linux:   pip install -r requirements-linux.txt  (GPU build, CUDA provider)\n"
+        f"Original error: {import_error}"
+    ) from import_error
 
 from PIL.Image import (
     open      as pillow_image_open,
@@ -259,19 +273,51 @@ TARGET_RATIOS = { "1:1": 1.0, "4:3": 4 / 3, "16:9": 16 / 9, "21:9": 21 / 9 }
 RESOLUTION_TARGET_HEIGHTS = { "720p": 720, "1080p": 1080, "2K": 1440, "4K": 2160 }
 image_extension_list   = [ ".png", ".jpg", ".bmp", ".tiff" ]
 video_extension_list   = [ ".mp4", ".mkv", ".avi", ".mov" ]
-video_codec_list = [ 
-    "x264",       "x265",       MENU_LIST_SEPARATOR[0],
-    "h264_nvenc", "hevc_nvenc", MENU_LIST_SEPARATOR[0],
-    "h264_amf",   "hevc_amf",   MENU_LIST_SEPARATOR[0],
-    "h264_qsv",   "hevc_qsv",
-    ]
+
+# Bundled binaries on Windows, system-installed binaries on Linux.
+ASSETS_PATH      = find_by_relative_path("Assets")
+FFMPEG_EXE_PATH  = platform_services.find_binary(ASSETS_PATH, "ffmpeg")
+FFPROBE_EXE_PATH = platform_services.find_binary(ASSETS_PATH, "ffprobe")
+LOGO_PNG_PATH    = os_path_join(ASSETS_PATH, "logo.png")
+LOGO_ICO_PATH    = os_path_join(ASSETS_PATH, "logo.ico")
+
+# Encoders offered in the GUI, limited to what the FFmpeg in use can encode with.
+# The Windows build bundles FFmpeg with NVENC/AMF/QSV; the Ubuntu package ships
+# NVENC only, so AMF and QSV never appear on Linux.
+_VIDEO_CODEC_GROUPS = (
+    (("x264", "libx264"),         ("x265", "libx265")),
+    (("h264_nvenc", "h264_nvenc"), ("hevc_nvenc", "hevc_nvenc")),
+    (("h264_amf", "h264_amf"),     ("hevc_amf", "hevc_amf")),
+    (("h264_qsv", "h264_qsv"),     ("hevc_qsv", "hevc_qsv")),
+)
+
+def _available_video_codecs() -> list[str]:
+    options = []
+    for group in _VIDEO_CODEC_GROUPS:
+        present = [label for label, encoder in group
+                   if platform_services.ffmpeg_has_encoder(FFMPEG_EXE_PATH, encoder)]
+        if not present:
+            continue
+        if options:
+            options += MENU_LIST_SEPARATOR
+        options += present
+    # No FFmpeg at all: keep the software options so the failure is reported by
+    # the encode step (with the real FFmpeg error) instead of an empty menu.
+    return options if options else ["x264", "x265"]
+
+video_codec_list = _available_video_codecs()
+
+# CUDA deinterlacing needs an FFmpeg built with the NVIDIA filters.
+CUDA_DEINTERLACE_SUPPORTED = (
+    platform_services.ffmpeg_has_filter(FFMPEG_EXE_PATH, "yadif_cuda")
+    and platform_services.ffmpeg_has_filter(FFMPEG_EXE_PATH, "bwdif_cuda")
+)
 
 OUTPUT_PATH_CODED    = "Same path as input files"
-DOCUMENT_PATH        = os_path_join(os_path_expanduser('~'), 'Documents')
-USER_PREFERENCE_PATH = find_by_relative_path(f"{DOCUMENT_PATH}{os_separator}{app_name}_{version}_userpreference.json")
-FFMPEG_EXE_PATH      = find_by_relative_path(f"Assets{os_separator}ffmpeg.exe")
-FFPROBE_EXE_PATH     = find_by_relative_path(f"Assets{os_separator}ffprobe.exe")
-LOGO_PNG_PATH        = find_by_relative_path(f"Assets{os_separator}logo.png")
+USER_PREFERENCE_PATH = os_path_join(
+    platform_services.config_directory(app_name),
+    f"{app_name}_{version}_userpreference.json",
+)
 
 COMPLETED_STATUS = "Completed"
 ERROR_STATUS     = "Error"
@@ -435,6 +481,10 @@ ROW_TARGET_RESOLUTION = _row(8)
 ROW_OUTPUT_PATH       = _row(9)
 ROW_ACTIONS           = _row(10)
 
+# Design width of the fixed-size window. Column slots are fractions of it, so a
+# label that needs more room than its slot can be measured in the same units.
+APP_DESIGN_WIDTH = 1000
+
 # Horizontal position (relx) of widgets, by column slot
 COL_INFO_L = 0.625                   # left  info button
 COL_INFO_R = 0.858                   # right info button
@@ -494,11 +544,11 @@ class GPU:
     # Domain model + registry for the system GPUs and their dedicated VRAM.
     name:      str    # short, readable display name, e.g. "RTX 5060 Ti"
     vram_gb:   float  # dedicated VRAM in GB
-    device_id: int    # DirectML device_id (position among hardware adapters)
+    device_id: int    # inference device id (DirectML adapter position / CUDA device index)
     vendor_id: int = 0  # PCI vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel); 0 when unknown
 
-    # Internal value used to let DirectML pick the best adapter when no concrete
-    # GPU is available (empty registry / unknown selection). Never shown in the menu.
+    # Internal value that lets the inference runtime pick the best device when no
+    # concrete GPU is available (empty registry / unknown selection). Never shown in the menu.
     AUTO:   ClassVar[str] = "Auto"
     # Placeholder shown in the dropdown when no GPU could be detected.
     NO_GPU: ClassVar[str] = "No GPU found"
@@ -519,6 +569,9 @@ class GPU:
     @property
     def hardware_codec(self) -> Optional[str]:
         # Preferred H.264 hardware encoder for this GPU's vendor, or None if unknown.
+        # NVENC is the only hardware encoder the Linux FFmpeg build ships with.
+        if not sys.platform == "win32" and self.vendor_id != self.VENDOR_NVIDIA:
+            return None
         return {
             self.VENDOR_NVIDIA: "h264_nvenc",
             self.VENDOR_AMD:    "h264_amf",
@@ -550,8 +603,8 @@ class GPU:
 
     @classmethod
     def device_id_for(cls, selected: str) -> str:
-        # Map a GPU display name to its DirectML device_id ("0", "1", ...).
-        # No GPUs / unknown selection fall back to "Auto" (DirectML picks the best adapter).
+        # Map a GPU display name to its inference device id ("0", "1", ...).
+        # No GPUs / unknown selection fall back to "Auto" (the runtime picks the best device).
         if not cls.detected:
             return cls.AUTO
         gpu = cls.find(selected)
@@ -610,101 +663,30 @@ class GPU:
 
     @staticmethod
     def _enumerate() -> list["GPU"]:
-        # Enumerate DirectX adapters via DXGI and read their dedicated VRAM.
-        # Works for every GPU vendor (Intel / AMD / NVIDIA) without extra dependencies.
-        # device_id is the position among hardware adapters (== DirectML device_id).
-
-        if sys.platform != "win32":
-            return []
-
-        import ctypes
-
-        class _LUID(ctypes.Structure):
-            _fields_ = [("LowPart", ctypes.c_uint32), ("HighPart", ctypes.c_int32)]
-
-        class _GUID(ctypes.Structure):
-            _fields_ = [
-                ("Data1", ctypes.c_uint32),
-                ("Data2", ctypes.c_uint16),
-                ("Data3", ctypes.c_uint16),
-                ("Data4", ctypes.c_ubyte * 8),
-            ]
-
-        class _DXGI_ADAPTER_DESC1(ctypes.Structure):
-            _fields_ = [
-                ("Description",           ctypes.c_wchar * 128),
-                ("VendorId",              ctypes.c_uint),
-                ("DeviceId",              ctypes.c_uint),
-                ("SubSysId",              ctypes.c_uint),
-                ("Revision",              ctypes.c_uint),
-                ("DedicatedVideoMemory",  ctypes.c_size_t),
-                ("DedicatedSystemMemory", ctypes.c_size_t),
-                ("SharedSystemMemory",    ctypes.c_size_t),
-                ("AdapterLuid",           _LUID),
-                ("Flags",                 ctypes.c_uint),
-            ]
-
-        DXGI_ADAPTER_FLAG_SOFTWARE = 2
-        IID_IDXGIFactory1 = _GUID(
-            0x770aae78, 0xf26f, 0x4dba,
-            (ctypes.c_ubyte * 8)(0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87)
-        )
-
-        def _com_method(obj_ptr, index, restype, argtypes):
-            vtable    = ctypes.cast(obj_ptr, ctypes.POINTER(ctypes.c_void_p))[0]
-            func_addr = ctypes.cast(vtable, ctypes.POINTER(ctypes.c_void_p))[index]
-            return ctypes.WINFUNCTYPE(restype, *argtypes)(func_addr)
+        # Ask the platform layer for the usable adapters, then apply the display
+        # naming used by the GUI. device_id is the index the AI runtime expects:
+        # the DirectML adapter position on Windows, the CUDA device index on Linux.
+        adapters = platform_services.gpu_adapters()
 
         gpus:       list["GPU"]    = []
         seen_names: dict[str, int] = {}
 
-        try:
-            factory = ctypes.c_void_p()
-            hr = ctypes.windll.dxgi.CreateDXGIFactory1(ctypes.byref(IID_IDXGIFactory1), ctypes.byref(factory))
-            if hr != 0 or not factory.value:
-                return []
+        for adapter in adapters:
+            display_name = GPU._shorten_name(adapter["name"])
 
-            # IDXGIFactory1::EnumAdapters1 -> vtable index 12 ; IUnknown::Release -> index 2
-            EnumAdapters1  = _com_method(factory, 12, ctypes.c_int32, [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)])
-            FactoryRelease = _com_method(factory, 2,  ctypes.c_ulong, [ctypes.c_void_p])
+            # Disambiguate identical GPUs (e.g. two "RTX 5060 Ti" -> add " (2)")
+            if display_name in seen_names:
+                seen_names[display_name] += 1
+                display_name = f"{display_name} ({seen_names[display_name]})"
+            else:
+                seen_names[display_name] = 1
 
-            try:
-                adapter_index  = 0
-                hardware_index = 0
-                while True:
-                    adapter = ctypes.c_void_p()
-                    if EnumAdapters1(factory, adapter_index, ctypes.byref(adapter)) != 0:
-                        break
-
-                    # IDXGIAdapter1::GetDesc1 -> vtable index 10 ; IUnknown::Release -> index 2
-                    desc           = _DXGI_ADAPTER_DESC1()
-                    GetDesc1       = _com_method(adapter, 10, ctypes.c_int32, [ctypes.c_void_p, ctypes.POINTER(_DXGI_ADAPTER_DESC1)])
-                    AdapterRelease = _com_method(adapter, 2,  ctypes.c_ulong, [ctypes.c_void_p])
-                    GetDesc1(adapter, ctypes.byref(desc))
-
-                    # Skip software adapters (WARP / Microsoft Basic Render Driver)
-                    if not (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE):
-                        vram_gb      = round(desc.DedicatedVideoMemory / (1024 ** 3), 1)
-                        display_name = GPU._shorten_name(desc.Description)
-
-                        # Disambiguate identical GPUs (e.g. two "RTX 5060 Ti" -> add " (2)")
-                        if display_name in seen_names:
-                            seen_names[display_name] += 1
-                            display_name = f"{display_name} ({seen_names[display_name]})"
-                        else:
-                            seen_names[display_name] = 1
-
-                        gpus.append(GPU(name=display_name, vram_gb=vram_gb, device_id=hardware_index, vendor_id=desc.VendorId))
-                        hardware_index += 1
-
-                    AdapterRelease(adapter)
-                    adapter_index += 1
-            finally:
-                FactoryRelease(factory)
-
-        except Exception as exception:
-            print(f"[{app_name}] GPU detection failed: {exception}")
-            return []
+            gpus.append(GPU(
+                name      = display_name,
+                vram_gb   = adapter["vram_gb"],
+                device_id = adapter["device_id"],
+                vendor_id = adapter["vendor_id"],
+            ))
 
         return gpus
 
@@ -723,20 +705,50 @@ def get_available_AI_providers() -> list[str]:
 def is_directml_available() -> bool:
     return any("Dml" in provider or "DirectML" in provider for provider in get_available_AI_providers())
 
+def is_cuda_available() -> bool:
+    return "CUDAExecutionProvider" in get_available_AI_providers()
+
+def get_AI_provider() -> str:
+    # GPU provider preferred, CPU as the final fallback:
+    #   Windows -> DirectML (any DirectX 12 GPU)
+    #   Linux   -> CUDA (NVIDIA, onnxruntime-gpu)
+    if is_directml_available(): return "DmlExecutionProvider"
+    if is_cuda_available():     return "CUDAExecutionProvider"
+    return "CPUExecutionProvider"
+
 def get_AI_providers() -> list[str]:
-    # Prefer DirectML (GPU); fall back to CPU when DirectML is not available.
-    return ["DmlExecutionProvider"] if is_directml_available() else ["CPUExecutionProvider"]
+    return [get_AI_provider()]
+
+def get_AI_provider_label() -> str:
+    provider = get_AI_provider()
+    if provider == "DmlExecutionProvider": return "DirectML"
+    if provider == "CUDAExecutionProvider": return "CUDA"
+    return "CPU"
 
 def get_AI_engine_info() -> str:
     # Human-readable engine label, e.g. "AI engine 1.x.y + DirectML".
     try:
-        AI_engine_version = onnxruntime_get_version_string()
-        AI_provider_name  = "DirectML" if is_directml_available() else "CPU"
-        return f"AI engine {AI_engine_version} + {AI_provider_name}"
+        return f"AI engine {onnxruntime_get_version_string()} + {get_AI_provider_label()}"
     except Exception:
         return ""
 
 
+
+def build_AI_provider_options(provider: str, selected_gpu: str) -> dict:
+    # DirectML and CUDA accept a target device; the CPU provider takes no options.
+    # selected_gpu is already resolved to a runtime device id ("0", "1", ...) or "Auto".
+    if provider == "DmlExecutionProvider":
+        if selected_gpu == "Auto":
+            return {"performance_preference": "high_performance"}
+        return {"device_id": str(selected_gpu)}
+
+    if provider == "CUDAExecutionProvider":
+        options = {"arena_extend_strategy": "kSameAsRequested"}
+        if selected_gpu != "Auto":
+            options["device_id"] = str(selected_gpu)
+        return options
+
+    return {}
 
 # AI -------------------
 
@@ -779,18 +791,8 @@ class AI_upscale:
 
         providers = get_AI_providers()
 
-        # DirectML accepts a target device_id / performance hint; other providers take no options.
         # provider_options must align 1:1 with providers, so build it per-provider.
-        provider_options = []
-        for provider in providers:
-            if provider == "DmlExecutionProvider":
-                # selected_gpu is already resolved to a DirectML device_id ("0", "1", ...) or "Auto"
-                if self.selected_gpu == "Auto":
-                    provider_options.append({"performance_preference": "high_performance"})
-                else:
-                    provider_options.append({"device_id": str(self.selected_gpu)})
-            else:
-                provider_options.append({})
+        provider_options = [build_AI_provider_options(provider, self.selected_gpu) for provider in providers]
 
         sess_options                          = onnxruntime_SessionOptions()
         sess_options.enable_profiling         = False
@@ -1429,8 +1431,9 @@ def prepare_output_image_filename(
 
     return output_path
 
-def get_subprocess_startupinfo() -> Optional[subprocess_STARTUPINFO]:
+def get_subprocess_startupinfo():
     # Hide the child process (FFMPEG) console window on Windows; None elsewhere.
+    # The return type is unannotated because subprocess.STARTUPINFO only exists on Windows.
     if sys.platform != "win32":
         return None
     startupinfo = subprocess_STARTUPINFO()
@@ -1458,7 +1461,7 @@ def run_ffmpeg_with_progress(
         status_prefix:    str,
         process_status_q: multiprocessing_Queue,
         event_stop:       multiprocessing_Event, # type: ignore
-        startupinfo:      Optional[subprocess_STARTUPINFO],
+        startupinfo:      object,
         idle_priority:    bool = False,
         ) -> Optional[subprocess_Popen]:
     # Run an FFMPEG command, reporting "<status_prefix> N%" progress until it finishes.
@@ -1473,8 +1476,7 @@ def run_ffmpeg_with_progress(
     )
 
     if idle_priority:
-        try: psutil_Process(ffmpeg_process.pid).nice(psutil_IDLE_PRIORITY_CLASS)
-        except Exception: pass
+        platform_services.set_idle_priority(ffmpeg_process.pid)
 
     progress_thread = Thread(target = count_ffmpeg_frames, args = (ffmpeg_process.stdout, frame_counter), daemon = True)
     error_thread    = Thread(target = collect_ffmpeg_errors, args = (ffmpeg_process.stderr, ffmpeg_errors), daemon = True)
@@ -1993,37 +1995,15 @@ def sharpen_and_save(
 # Upscale pipeline --------------------
 
 def prevent_sleep() -> None:
-    # Keep Windows from sleeping while a batch is running (doesn't force the display to stay on).
-    if sys.platform != "win32": return
-    import ctypes
-    try:
-        ES_CONTINUOUS      = 0x80000000
-        ES_SYSTEM_REQUIRED = 0x00000001
-        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-    except Exception as e:
-        print(f"[{app_name}] Warning: could not prevent system sleep: {e}")
+    # Keep the machine awake while a batch runs (the display may still turn off).
+    platform_services.prevent_sleep()
 
 def allow_sleep() -> None:
-    if sys.platform != "win32": return
-    import ctypes
-    try:
-        ES_CONTINUOUS = 0x80000000
-        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-    except Exception as e:
-        print(f"[{app_name}] Warning: could not restore system sleep state: {e}")
+    platform_services.allow_sleep()
 
 def show_completion_notification() -> None:
-    # Windows toast so the user gets pinged even if the app isn't in focus.
-    if sys.platform != "win32": return
-    try:
-        winotify_Notification(
-            app_id = app_name,
-            title  = app_name,
-            msg    = "All files completed! :)",
-            icon   = LOGO_PNG_PATH,
-        ).show()
-    except Exception as e:
-        print(f"[{app_name}] Warning: could not show system notification: {e}")
+    # Desktop notification so the user gets pinged even if the app isn't in focus.
+    platform_services.notify_completion(app_name, "All files completed! :)", LOGO_PNG_PATH)
 
 def check_upscale_steps() -> None:
     # This thread never calls Tk. Terminal events are never discarded.
@@ -2200,6 +2180,10 @@ def upscale_button_command() -> None:
         return
     processing_config = build_processing_config()
     if processing_config is None:
+        return
+    if missing_ffmpeg() and any(check_if_file_is_video(path) for path in processing_config.selected_file_list):
+        show_error_message(MISSING_FFMPEG_MESSAGE)
+        app_state.info_message.set(MISSING_FFMPEG_MESSAGE)
         return
     app_state.starting = True
     app_state.info_message.set("Checking output drive…")
@@ -2488,7 +2472,7 @@ def upscale_video_frames_async(
 
     
     process_pid = os_getpid()
-    psutil_Process(process_pid).nice(psutil_IDLE_PRIORITY_CLASS)
+    platform_services.set_idle_priority(process_pid)
 
     opencv_setNumThreads(1)
 
@@ -3376,6 +3360,11 @@ class FileWidget(CTkScrollableFrame):
     RENDER_BATCH_SIZE = 2
     CARD_HEIGHT = 240
     WINDOW_SIZE = 16
+    # The list emulates its full height with two spacers so the scrollbar reflects
+    # the real position. X11 cannot allocate pixmaps taller than 32767 px (27564 on
+    # some drivers), so above this budget the spacers switch to a proportional
+    # layout: the scrollbar becomes a fraction of the list instead of a pixel map.
+    MAX_SCROLL_TRAVEL = 32000
 
 
     def __init__(
@@ -3448,10 +3437,29 @@ class FileWidget(CTkScrollableFrame):
     def _sync_visible_cards(self, force=False):
         # Isolate CTkScrollableFrame's canvas access here. Only a small window of
         # fixed-height cards exists, regardless of the number of selected files.
-        scale = self._get_widget_scaling()
+        scale  = self._get_widget_scaling()
         offset = max(0, self._parent_canvas.canvasy(0) / scale - 40)
-        start = max(0, min(max(0, len(self.file_list) - self.WINDOW_SIZE),
-                           int(offset // self.CARD_HEIGHT) - 3))
+        last_start      = max(0, len(self.file_list) - self.WINDOW_SIZE)
+        emulated_height = len(self.file_list) * self.CARD_HEIGHT
+        proportional    = emulated_height > self.MAX_SCROLL_TRAVEL
+
+        if proportional:
+            # Compressed layout: the spacers always add up to one fixed travel
+            # distance (screen height, not list height), so the scrollbar keeps a
+            # stable range and its position maps onto the file index instead.
+            view_first, view_last = self._parent_canvas.yview()
+            span      = min(0.999, max(view_last - view_first, 0.0))   # visible share of the scroll region
+            position  = min(1.0, max(0.0, view_first / (1.0 - span)))
+            # Two spare pixels: an empty spacer is still configured with height 1.
+            travel = self.MAX_SCROLL_TRAVEL - self.WINDOW_SIZE * self.CARD_HEIGHT - 2
+            start     = round(position * last_start)
+            top       = round(position * travel)
+            bottom    = travel - top
+        else:
+            start    = max(0, min(last_start, int(offset // self.CARD_HEIGHT) - 3))
+            top      = start * self.CARD_HEIGHT
+            bottom   = max(0, len(self.file_list) - start - self.WINDOW_SIZE) * self.CARD_HEIGHT
+
         paths = self.file_list[start:start + self.WINDOW_SIZE]
         if not force and paths == self._visible_paths:
             return
@@ -3467,8 +3475,6 @@ class FileWidget(CTkScrollableFrame):
         for path in list(self.pending_media):
             if path not in paths and self.pending_media[path].done():
                 self.pending_media.pop(path)
-        top = start * self.CARD_HEIGHT
-        bottom = max(0, len(self.file_list) - start - len(paths)) * self.CARD_HEIGHT
         self._top_spacer.configure(height=max(1, top))
         self._top_spacer.grid(row=1, column=0, columnspan=3, sticky="ew")
         if top == 0:
@@ -4011,7 +4017,11 @@ def build_processing_config() -> Optional[ProcessingConfig]:
         input_resize_factor        = input_resize_factor,
         output_resize_factor       = output_resize_factor,
         selected_gpu               = GPU.device_id_for(app_state.preferences.gpu),
-        use_nvidia_deinterlace     = selected_gpu is not None and selected_gpu.vendor_id == GPU.VENDOR_NVIDIA,
+        use_nvidia_deinterlace     = (
+            CUDA_DEINTERLACE_SUPPORTED
+            and selected_gpu is not None
+            and selected_gpu.vendor_id == GPU.VENDOR_NVIDIA
+        ),
         tiles_resolution           = tiles_resolution,
         selected_sharpening_amount = get_current_sharpening_amount(),
         selected_keep_frames       = app_state.preferences.keep_frames,
@@ -4022,6 +4032,32 @@ def build_processing_config() -> Optional[ProcessingConfig]:
         selected_video_extension   = app_state.preferences.video_extension,
         selected_video_codec       = app_state.preferences.video_codec,
     )
+
+def missing_runtime_dependencies() -> list[str]:
+    # FFmpeg powers frame extraction, deinterlacing and video encoding; without
+    # it every video job fails deep inside the pipeline.
+    missing = []
+    for binary_path, package in ((FFMPEG_EXE_PATH, "ffmpeg"), (FFPROBE_EXE_PATH, "ffmpeg")):
+        if not platform_services.binary_available(binary_path):
+            missing.append(f"{package} (missing: {os_path_basename(binary_path)})")
+    return missing
+
+MISSING_FFMPEG_MESSAGE = (
+    "FFmpeg not found - install it with 'sudo apt install ffmpeg' "
+    "(or place ffmpeg and ffprobe in the Assets folder). Video jobs cannot run."
+)
+
+def missing_ffmpeg() -> bool:
+    return bool(missing_runtime_dependencies())
+
+def report_missing_dependencies() -> None:
+    # Startup is not blocked by a modal dialog: the app stays usable for images,
+    # and the status line plus the log carry the exact reason video jobs stop.
+    if not missing_ffmpeg():
+        return
+    print(f"[{app_name}] {MISSING_FFMPEG_MESSAGE}")
+    if app_state is not None and app_state.info_message is not None:
+        app_state.info_message.set(MISSING_FFMPEG_MESSAGE)
 
 def show_error_message(exception: str) -> None:
     messageBox_title    = "Upscale error"
@@ -4305,7 +4341,7 @@ class App():
         window.title(get_AI_engine_info())
         window.geometry("1000x675")
         window.resizable(False, False)
-        window.iconbitmap(find_by_relative_path("Assets" + os_separator + "logo.ico"))
+        platform_services.apply_window_icon(window, LOGO_ICO_PATH, LOGO_PNG_PATH)
 
         self.place_loadFile_section()
 
@@ -4657,7 +4693,8 @@ class App():
             app_state.preferences.gpu = GPU.default()
 
         info_button = App.create_info_button(open_info_gpu, "GPU")
-        option_menu = App.create_option_menu(App.select_gpu_from_menu, gpu_menu_list, app_state.preferences.gpu, width = little_menu_width) 
+        gpu_menu_width = App.menu_width_for_texts(gpu_menu_list, little_menu_width, 150)
+        option_menu = App.create_option_menu(App.select_gpu_from_menu, gpu_menu_list, app_state.preferences.gpu, width = gpu_menu_width)
 
         App.place_at(info_button, COL_INFO_L, row)
         App.place_at(option_menu, COL_MENU_L, row)
@@ -4896,14 +4933,19 @@ class App():
         place_option_background(row)
 
         info_button = App.create_info_button(open_info_target_resolution, "Target res.")
-        option_menu = App.create_option_menu(App.select_target_resolution_from_menu, resolution_size_list, app_state.preferences.target_resolution)
         ratio_info_button  = App.create_info_button(open_info_target_ratio, "Target ratio")
-        ratio_option_menu  = App.create_option_menu(App.select_target_ratio_from_menu, target_ratio_list, app_state.preferences.target_ratio)
+
+        # This row carries the two longest labels of the window: place both menus
+        # right after their label instead of at the fixed column slots, which were
+        # measured for the narrower Windows font and would cover the label text.
+        menu_width = 110
+        option_menu       = App.create_option_menu(App.select_target_resolution_from_menu, resolution_size_list, app_state.preferences.target_resolution, width = menu_width)
+        ratio_option_menu = App.create_option_menu(App.select_target_ratio_from_menu, target_ratio_list, app_state.preferences.target_ratio, width = menu_width)
 
         App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_L, row)
+        App.place_at(option_menu, App.menu_relx_after_label(COL_INFO_L, "Target res.", menu_width + 2), row)
         App.place_at(ratio_info_button, COL_INFO_R, row)
-        App.place_at(ratio_option_menu, COL_MENU_R, row)
+        App.place_at(ratio_option_menu, App.menu_relx_after_label(COL_INFO_R, "Target ratio", menu_width + 2), row)
 
     @staticmethod
     def place_output_path_textbox() -> None:
@@ -5185,6 +5227,26 @@ class App():
         return frame
 
     @staticmethod
+    def menu_width_for_texts(values: list, minimum: int, maximum: int) -> int:
+        # Menus have a fixed width, but their values (GPU names, presets) are not.
+        # Measure the widest value and keep the arrow and padding usable, staying
+        # within the slot the row layout leaves for the menu.
+        widest = max((bold11.measure(str(value)) for value in values), default = 0)
+        return max(minimum, min(maximum, widest + 34))
+
+    @staticmethod
+    def menu_relx_after_label(info_relx: float, label_text: str, menu_width: int,
+                              gap: int = 8, right_margin: int = 12) -> float:
+        # Place a menu right after its label instead of at a fixed column slot:
+        # with a wider UI font (every Linux desktop font) the fixed slot would
+        # start before the label text ends and paint over it.
+        text_start = info_relx * APP_DESIGN_WIDTH - 100 + 29
+        text_end   = text_start + bold13.measure(label_text)
+        center     = text_end + gap + menu_width / 2
+        limit      = APP_DESIGN_WIDTH - right_margin - menu_width / 2
+        return min(center, limit) / APP_DESIGN_WIDTH
+
+    @staticmethod
     def create_option_menu(
             command:       Callable, 
             values:        list,
@@ -5348,6 +5410,11 @@ class App():
 if __name__ == "__main__":
     multiprocessing_freeze_support()
 
+    # Linux defaults to fork, which would hand the CUDA-enabled workers a copy of
+    # the GUI process. Spawn gives every worker a clean interpreter instead.
+    if sys.platform != "win32":
+        multiprocessing_set_start_method("spawn", force = True)
+
     multiprocessing_manager = multiprocessing_Manager()
     process_log_q           = multiprocessing_manager.Queue(maxsize=LOG_QUEUE_MAXSIZE)
     configure_realtime_logging(process_log_q)
@@ -5389,6 +5456,10 @@ if __name__ == "__main__":
     # Normalize a stale/unknown saved GPU (e.g. from another PC) to a safe default
     if preferences.gpu not in GPU.menu_list(): preferences.gpu = GPU.default()
 
+    # A saved codec this FFmpeg cannot encode with (e.g. AMF from a Windows
+    # preference file) would fail every encode; fall back to the first option.
+    if preferences.video_codec not in video_codec_list: preferences.video_codec = video_codec_list[0]
+
     app_state.selected_input_resize_factor.set(preferences.input_resize_factor)
     app_state.selected_output_resize_factor.set(preferences.output_resize_factor)
     apply_auto_vram_for_gpu(preferences.gpu, fallback = preferences.vram_limiter)
@@ -5401,7 +5472,7 @@ if __name__ == "__main__":
     app_state.selected_input_resize_factor.trace_add('write', update_output_scale_for_target_resolution)
     app_state.selected_output_resize_factor.trace_add('write', update_file_widget)
 
-    font   = "Segoe UI"    
+    font   = platform_services.ui_font_family()
     bold8  = CTkFont(family = font, size = 8, weight = "bold")
     bold9  = CTkFont(family = font, size = 9, weight = "bold")
     bold10 = CTkFont(family = font, size = 10, weight = "bold")
@@ -5429,6 +5500,7 @@ if __name__ == "__main__":
     info_icon     = CTkImage(pillow_image_open(find_by_relative_path(f"Assets{os_separator}info_icon.png")),      size=(18, 18))
 
     app = App(app_state.window)
+    report_missing_dependencies()
     app_state.window.after(100, poll_realtime_logs)
     app_state.window.update()
     app_state.window.mainloop()

@@ -1,0 +1,29 @@
+# Ubuntu / Linux dependencies (Python 3.10 - 3.13).
+# System packages first:  sudo apt install python3-tk ffmpeg
+# Then:                   python3 -m pip install -r requirements-linux.txt
+
+# AI engine - CUDA build. Uses the CUDAExecutionProvider on NVIDIA GPUs and
+# falls back to CPUExecutionProvider when no GPU/driver is present.
+onnxruntime-gpu==1.24.4
+
+# CUDA runtime libraries shipped as wheels (CUDA 12 + cuDNN 9, required by
+# onnxruntime-gpu 1.24). They are loaded by quality_scaler_platform.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cuda-runtime-cu12==12.9.79
+nvidia-cufft-cu12==11.4.1.4
+nvidia-curand-cu12==10.3.10.19
+nvidia-cudnn-cu12==9.27.0.42
+
+numpy
+
+# GUI
+customtkinter
+
+# UTILS
+opencv-python-headless
+Pillow
+natsort
+psutil
+
+# Packaging (only needed for tools/build-linux.sh)
+pyinstaller

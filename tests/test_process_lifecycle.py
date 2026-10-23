@@ -11,8 +11,9 @@ import QualityScaler as q
 
 
 def spawn_test_child(channel):
+    # CREATE_NO_WINDOW only exists on Windows; on Linux the flag is simply absent.
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     channel.put(child.pid)
     child.wait()
 
