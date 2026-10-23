@@ -485,21 +485,25 @@ ROW_ACTIONS           = _row(10)
 # label that needs more room than its slot can be measured in the same units.
 APP_DESIGN_WIDTH = 1000
 
-# Horizontal position (relx) of widgets, by column slot
-COL_INFO_L = 0.625                   # left  info button
-COL_INFO_R = 0.858                   # right info button
-COL_TEXT_L = COL_INFO_L + 0.08       # left  text box    (input scale)
-COL_TEXT_R = COL_INFO_R + 0.08       # right text box    (output scale, VRAM)
-COL_MENU_L = COL_TEXT_L - 0.0127     # left  option menu (GPU, image, codec)
-COL_MENU_R = COL_TEXT_R - 0.0127     # right option menu (video output, keep frames)
+# Row layout. The left column starts at a fixed slot so every "?" button lines
+# up; the value after it is placed by measurement, because the label width
+# depends on the installed UI font (every Linux desktop font is wider than the
+# Segoe UI the original slots were tuned for). The right column is right-aligned
+# and also measured from its own label.
+COL_INFO_L = 0.625                   # left  info button (left edge derived from it)
+ROW_PANEL_RIGHT_MARGIN = 24          # gap between the right column and the window edge
+ROW_LABEL_OFFSET       = 29          # info button + padding before the label text
+ROW_INFO_MIN_WIDTH     = 200         # info frame width used by the original layout
+ROW_GAP                = 8           # label text -> value
+ROW_MIN_VALUE_WIDTH    = 60          # never squeeze a value widget below this
 
 # Header / zoom / links area
 COL_TITLE  = 0.66                    # app name
 COL_ZOOM   = COL_TITLE + 0.2         # zoom menu, links, output path box
-COL_MENU_C = COL_ZOOM + 0.0355       # centered single menu (AI model / sharpening / threads)
 
 little_textbox_width = 74
-little_menu_width = 98
+little_menu_width    = 98
+AI_menu_width        = 159   # single-column rows (model, sharpening, threads, deinterlace)
 
 
 
@@ -4541,8 +4545,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_model, "AI model")
         option_menu = App.create_option_menu(App.select_AI_from_menu, AI_models_list, app_state.preferences.ai_model)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_C, row)
+        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
 
     @staticmethod
     def place_AI_sharpening_menu() -> None:
@@ -4570,8 +4573,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_sharpening, "AI sharpening")
         option_menu = App.create_option_menu(App.select_sharpening_from_menu, sharpening_list, app_state.preferences.sharpening)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_C, row)
+        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
 
     @staticmethod
     def place_AI_multithreading_menu() -> None:
@@ -4602,8 +4604,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_multithreading, "AI multithreading")
         option_menu = App.create_option_menu(App.select_AI_multithreading_from_menu, AI_multithreading_list, app_state.preferences.ai_multithreading)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_C, row)
+        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
 
     @staticmethod
     def place_input_output_resolution_textboxs() -> None:
@@ -4642,18 +4643,17 @@ class App():
         place_option_background(row)
 
         # Input scale %
-        info_button = App.create_info_button(open_info_input_resolution, "Input scale %")
-        option_menu = App.create_text_box(App.get_input_resize_factor_var(), width = little_textbox_width) 
+        input_info    = App.create_info_button(open_info_input_resolution, "Input scale %")
+        input_entry   = App.create_text_box(App.get_input_resize_factor_var(), width = little_textbox_width)
+        output_info   = App.create_info_button(open_info_output_resolution, "Output scale %")
+        output_entry  = App.create_text_box(App.get_output_resize_factor_var(), width = little_textbox_width)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_TEXT_L, row)
-
-        # Output scale %
-        info_button = App.create_info_button(open_info_output_resolution, "Output scale %")
-        option_menu = App.create_text_box(App.get_output_resize_factor_var(), width = little_textbox_width)  
-
-        App.place_at(info_button, COL_INFO_R, row)
-        App.place_at(option_menu, COL_TEXT_R, row)
+        App.place_row(
+            row,
+            "Input scale %", input_entry, little_textbox_width + 2,
+            "Output scale %", output_entry, little_textbox_width + 2,
+            left_info = input_info, right_info = output_info,
+        )
 
     @staticmethod
     def place_gpu_gpuVRAM_menus() -> None:
@@ -4692,19 +4692,19 @@ class App():
         if app_state.preferences.gpu not in gpu_menu_list:
             app_state.preferences.gpu = GPU.default()
 
-        info_button = App.create_info_button(open_info_gpu, "GPU")
+        gpu_info      = App.create_info_button(open_info_gpu, "GPU")
         gpu_menu_width = App.menu_width_for_texts(gpu_menu_list, little_menu_width, 150)
-        option_menu = App.create_option_menu(App.select_gpu_from_menu, gpu_menu_list, app_state.preferences.gpu, width = gpu_menu_width)
+        gpu_menu      = App.create_option_menu(App.select_gpu_from_menu, gpu_menu_list, app_state.preferences.gpu, width = gpu_menu_width)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_L, row)
+        vram_info     = App.create_info_button(open_info_vram_limiter, "GPU VRAM (GB)")
+        vram_entry    = App.create_text_box(App.get_vram_limiter_var(), width = little_textbox_width)
 
-        # GPU VRAM
-        info_button = App.create_info_button(open_info_vram_limiter, "GPU VRAM (GB)")
-        option_menu = App.create_text_box(App.get_vram_limiter_var(), width = little_textbox_width)  
-
-        App.place_at(info_button, COL_INFO_R, row)
-        App.place_at(option_menu, COL_TEXT_R, row)
+        App.place_row(
+            row,
+            "GPU", gpu_menu, gpu_menu_width + 2,
+            "GPU VRAM (GB)", vram_entry, little_textbox_width + 2,
+            left_info = gpu_info, right_info = vram_info,
+        )
 
     @staticmethod
     def place_image_video_output_menus() -> None:
@@ -4777,16 +4777,19 @@ class App():
         place_option_background(row)
 
         # Image output
-        info_button = App.create_info_button(open_info_image_output, "Image ext.")
-        option_menu = App.create_option_menu(App.select_image_extension_from_menu, image_extension_list, app_state.preferences.image_extension, width = little_menu_width)
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_L, row)
+        image_info = App.create_info_button(open_info_image_output, "Image ext.")
+        image_menu = App.create_option_menu(App.select_image_extension_from_menu, image_extension_list, app_state.preferences.image_extension, width = little_menu_width)
 
         # Video output
-        info_button = App.create_info_button(open_info_video_extension, "Video ext.")
-        option_menu = App.create_option_menu(App.select_video_extension_from_menu, video_extension_list, app_state.preferences.video_extension, width = little_menu_width)
-        App.place_at(info_button, COL_INFO_R, row)
-        App.place_at(option_menu, COL_MENU_R, row)
+        video_info = App.create_info_button(open_info_video_extension, "Video ext.")
+        video_menu = App.create_option_menu(App.select_video_extension_from_menu, video_extension_list, app_state.preferences.video_extension, width = little_menu_width)
+
+        App.place_row(
+            row,
+            "Image ext.", image_menu, little_menu_width + 2,
+            "Video ext.", video_menu, little_menu_width + 2,
+            left_info = image_info, right_info = video_info,
+        )
 
     @staticmethod
     def place_video_codec_keep_frames_menus() -> None:
@@ -4830,16 +4833,20 @@ class App():
         place_option_background(row)
 
         # Video codec
-        info_button = App.create_info_button(open_info_video_codec, "Video codec")
-        option_menu = App.create_option_menu(App.select_video_codec_from_menu, video_codec_list, app_state.preferences.video_codec, width = little_menu_width, variable = App.get_video_codec_var())
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_L, row)
+        codec_info = App.create_info_button(open_info_video_codec, "Video codec")
+        codec_width = App.menu_width_for_texts(video_codec_list, little_menu_width, 150)
+        codec_menu = App.create_option_menu(App.select_video_codec_from_menu, video_codec_list, app_state.preferences.video_codec, width = codec_width, variable = App.get_video_codec_var())
 
         # Keep frames
-        info_button = App.create_info_button(open_info_keep_frames, "Keep frames")
-        option_menu = App.create_option_menu(App.select_save_frame_from_menu, keep_frames_list, "ON" if app_state.preferences.keep_frames else "OFF", width = little_menu_width)
-        App.place_at(info_button, COL_INFO_R, row)
-        App.place_at(option_menu, COL_MENU_R, row)
+        frames_info = App.create_info_button(open_info_keep_frames, "Keep frames")
+        frames_menu = App.create_option_menu(App.select_save_frame_from_menu, keep_frames_list, "ON" if app_state.preferences.keep_frames else "OFF", width = little_menu_width)
+
+        App.place_row(
+            row,
+            "Video codec", codec_menu, codec_width + 2,
+            "Keep frames", frames_menu, little_menu_width + 2,
+            left_info = codec_info, right_info = frames_info,
+        )
 
     @staticmethod
     def place_deinterlace_menu() -> None:
@@ -4874,8 +4881,7 @@ class App():
         info_button = App.create_info_button(open_info_deinterlace, "Deinterlace")
         option_menu = App.create_option_menu(App.select_deinterlace_from_menu, deinterlace_list, app_state.preferences.deinterlace)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, COL_MENU_C, row)
+        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
 
     @staticmethod
     def place_target_resolution_menu() -> None:
@@ -4932,20 +4938,19 @@ class App():
 
         place_option_background(row)
 
-        info_button = App.create_info_button(open_info_target_resolution, "Target res.")
-        ratio_info_button  = App.create_info_button(open_info_target_ratio, "Target ratio")
+        target_info = App.create_info_button(open_info_target_resolution, "Target res.")
+        ratio_info  = App.create_info_button(open_info_target_ratio, "Target ratio")
 
-        # This row carries the two longest labels of the window: place both menus
-        # right after their label instead of at the fixed column slots, which were
-        # measured for the narrower Windows font and would cover the label text.
-        menu_width = 110
-        option_menu       = App.create_option_menu(App.select_target_resolution_from_menu, resolution_size_list, app_state.preferences.target_resolution, width = menu_width)
-        ratio_option_menu = App.create_option_menu(App.select_target_ratio_from_menu, target_ratio_list, app_state.preferences.target_ratio, width = menu_width)
+        menu_width        = 110
+        target_menu       = App.create_option_menu(App.select_target_resolution_from_menu, resolution_size_list, app_state.preferences.target_resolution, width = menu_width)
+        ratio_menu        = App.create_option_menu(App.select_target_ratio_from_menu, target_ratio_list, app_state.preferences.target_ratio, width = menu_width)
 
-        App.place_at(info_button, COL_INFO_L, row)
-        App.place_at(option_menu, App.menu_relx_after_label(COL_INFO_L, "Target res.", menu_width + 2), row)
-        App.place_at(ratio_info_button, COL_INFO_R, row)
-        App.place_at(ratio_option_menu, App.menu_relx_after_label(COL_INFO_R, "Target ratio", menu_width + 2), row)
+        App.place_row(
+            row,
+            "Target res.", target_menu, menu_width + 2,
+            "Target ratio", ratio_menu, menu_width + 2,
+            left_info = target_info, right_info = ratio_info,
+        )
 
     @staticmethod
     def place_output_path_textbox() -> None:
@@ -4972,10 +4977,16 @@ class App():
             height  = 26
         )
   
-        background.place(   relx = 0.75,                 rely = ROW_OUTPUT_PATH, relwidth = 0.48,  anchor = "center")
-        App.place_at(info_button, COL_INFO_L, ROW_OUTPUT_PATH)
-        App.place_at(active_button, COL_INFO_L + 0.052, ROW_OUTPUT_PATH)
-        App.place_at(option_menu, COL_ZOOM - 0.008, ROW_OUTPUT_PATH)
+        # The path box keeps the panel's right edge; SELECT sits right after the
+        # label, whose width depends on the installed font.
+        App.place_single_row(ROW_OUTPUT_PATH, option_menu, 250, left_info = info_button)
+        App.place_left(
+            active_button,
+            COL_INFO_L * APP_DESIGN_WIDTH - ROW_INFO_MIN_WIDTH / 2 + ROW_LABEL_OFFSET
+            + bold13.measure("Output path") + ROW_GAP,
+            ROW_OUTPUT_PATH,
+        )
+        background.place(relx = 0.75, rely = ROW_OUTPUT_PATH, relwidth = 0.48, anchor = "center")
 
     @staticmethod
     def place_message_label() -> None:
@@ -5182,11 +5193,16 @@ class App():
         )
 
     @staticmethod
-    def create_info_button(command: Callable, text: str, width: int = 200) -> CTkFrame:
+    def create_info_button(command: Callable, text: str, width: int = ROW_INFO_MIN_WIDTH) -> CTkFrame:
+        # The label must never clip: a wider UI font needs a wider label and frame.
+        # The frame is placed by its left edge, so widening it does not move the text.
+        label_width = max(width - ROW_LABEL_OFFSET, bold13.measure(text) + 8)
+        frame_width = ROW_LABEL_OFFSET + label_width
 
         frame = CTkFrame(
             master   = App.get_app_window(), 
             fg_color = CARD_BACKGROUND_COLOR, 
+            width    = frame_width,
             height   = 25
         )
 
@@ -5210,7 +5226,7 @@ class App():
         label = CTkLabel(
             master     = frame,
             text       = text,
-            width      = width,
+            width      = label_width,
             height     = 22,
             fg_color   = "transparent",
             bg_color   = CARD_BACKGROUND_COLOR,
@@ -5229,22 +5245,55 @@ class App():
     @staticmethod
     def menu_width_for_texts(values: list, minimum: int, maximum: int) -> int:
         # Menus have a fixed width, but their values (GPU names, presets) are not.
-        # Measure the widest value and keep the arrow and padding usable, staying
-        # within the slot the row layout leaves for the menu.
+        # Measure the widest value and keep room for the arrow and padding.
         widest = max((bold11.measure(str(value)) for value in values), default = 0)
         return max(minimum, min(maximum, widest + 34))
 
     @staticmethod
-    def menu_relx_after_label(info_relx: float, label_text: str, menu_width: int,
-                              gap: int = 8, right_margin: int = 12) -> float:
-        # Place a menu right after its label instead of at a fixed column slot:
-        # with a wider UI font (every Linux desktop font) the fixed slot would
-        # start before the label text ends and paint over it.
-        text_start = info_relx * APP_DESIGN_WIDTH - 100 + 29
-        text_end   = text_start + bold13.measure(label_text)
-        center     = text_end + gap + menu_width / 2
-        limit      = APP_DESIGN_WIDTH - right_margin - menu_width / 2
-        return min(center, limit) / APP_DESIGN_WIDTH
+    def place_left(widget, left_edge: float, row: float) -> None:
+        # Anchor at the left edge: measured labels change the frame width, and a
+        # centre anchor would then move the text instead of only the frame.
+        widget.place(relx = left_edge / APP_DESIGN_WIDTH, rely = row, anchor = "w")
+
+    @staticmethod
+    def place_row(row: float, left_label: str, left_widget, left_width: int,
+                  right_label: Optional[str] = None, right_widget = None,
+                  right_width: int = 0, left_info = None, right_info = None) -> None:
+        # Lay out one settings row from measured text: the left value follows its
+        # label, the right column is right-aligned to the panel edge. A left value
+        # that would reach the right column is narrowed instead of overlapping it.
+        width = APP_DESIGN_WIDTH
+
+        left_text_start = COL_INFO_L * width - ROW_INFO_MIN_WIDTH / 2 + ROW_LABEL_OFFSET
+        left_text_end   = left_text_start + bold13.measure(left_label)
+
+        if right_label is not None:
+            right_text_end   = width - ROW_PANEL_RIGHT_MARGIN - right_width - ROW_GAP
+            right_text_start = right_text_end - bold13.measure(right_label)
+            left_limit       = right_text_start - ROW_GAP
+        else:
+            right_text_end   = width - ROW_PANEL_RIGHT_MARGIN - right_width
+            left_limit       = width - ROW_PANEL_RIGHT_MARGIN
+
+        if left_info is not None:
+            App.place_left(left_info, left_text_start - ROW_LABEL_OFFSET, row)
+
+        left_value_start = left_text_end + ROW_GAP
+        left_width       = min(left_width, max(ROW_MIN_VALUE_WIDTH, int(left_limit - left_value_start)))
+        App.place_left(left_widget, left_value_start, row)
+
+        if right_label is not None:
+            if right_info is not None:
+                App.place_left(right_info, right_text_start - ROW_LABEL_OFFSET, row)
+            App.place_left(right_widget, right_text_end + ROW_GAP, row)
+
+    @staticmethod
+    def place_single_row(row: float, left_widget, left_width: int, left_info = None) -> None:
+        # Rows with one value (AI model, sharpening, threads, deinterlace) keep the
+        # value right-aligned so the column of menus stays straight.
+        if left_info is not None:
+            App.place_left(left_info, COL_INFO_L * APP_DESIGN_WIDTH - ROW_INFO_MIN_WIDTH / 2, row)
+        App.place_left(left_widget, APP_DESIGN_WIDTH - ROW_PANEL_RIGHT_MARGIN - left_width, row)
 
     @staticmethod
     def create_option_menu(
