@@ -503,7 +503,6 @@ COL_ZOOM   = COL_TITLE + 0.2         # zoom menu, links, output path box
 
 little_textbox_width = 74
 little_menu_width    = 98
-AI_menu_width        = 159   # single-column rows (model, sharpening, threads, deinterlace)
 
 
 
@@ -4545,7 +4544,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_model, "AI model")
         option_menu = App.create_option_menu(App.select_AI_from_menu, AI_models_list, app_state.preferences.ai_model)
 
-        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
+        App.place_single_row(row, option_menu, left_info = info_button)
 
     @staticmethod
     def place_AI_sharpening_menu() -> None:
@@ -4573,7 +4572,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_sharpening, "AI sharpening")
         option_menu = App.create_option_menu(App.select_sharpening_from_menu, sharpening_list, app_state.preferences.sharpening)
 
-        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
+        App.place_single_row(row, option_menu, left_info = info_button)
 
     @staticmethod
     def place_AI_multithreading_menu() -> None:
@@ -4604,7 +4603,7 @@ class App():
         info_button = App.create_info_button(open_info_AI_multithreading, "AI multithreading")
         option_menu = App.create_option_menu(App.select_AI_multithreading_from_menu, AI_multithreading_list, app_state.preferences.ai_multithreading)
 
-        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
+        App.place_single_row(row, option_menu, left_info = info_button)
 
     @staticmethod
     def place_input_output_resolution_textboxs() -> None:
@@ -4881,7 +4880,7 @@ class App():
         info_button = App.create_info_button(open_info_deinterlace, "Deinterlace")
         option_menu = App.create_option_menu(App.select_deinterlace_from_menu, deinterlace_list, app_state.preferences.deinterlace)
 
-        App.place_single_row(row, option_menu, AI_menu_width + 2, left_info = info_button)
+        App.place_single_row(row, option_menu, left_info = info_button)
 
     @staticmethod
     def place_target_resolution_menu() -> None:
@@ -4979,7 +4978,7 @@ class App():
   
         # The path box keeps the panel's right edge; SELECT sits right after the
         # label, whose width depends on the installed font.
-        App.place_single_row(ROW_OUTPUT_PATH, option_menu, 250, left_info = info_button)
+        App.place_single_row(ROW_OUTPUT_PATH, option_menu, left_info = info_button)
         App.place_left(
             active_button,
             COL_INFO_L * APP_DESIGN_WIDTH - ROW_INFO_MIN_WIDTH / 2 + ROW_LABEL_OFFSET
@@ -5260,8 +5259,10 @@ class App():
                   right_label: Optional[str] = None, right_widget = None,
                   right_width: int = 0, left_info = None, right_info = None) -> None:
         # Lay out one settings row from measured text: the left value follows its
-        # label, the right column is right-aligned to the panel edge. A left value
-        # that would reach the right column is narrowed instead of overlapping it.
+        # label, the right column is right-aligned to the panel edge. The left value
+        # keeps its requested width unless that would reach the right column's info
+        # button, in which case it is narrowed - the value text is what gives way,
+        # never the label beside it.
         width = APP_DESIGN_WIDTH
 
         left_text_start = COL_INFO_L * width - ROW_INFO_MIN_WIDTH / 2 + ROW_LABEL_OFFSET
@@ -5270,7 +5271,7 @@ class App():
         if right_label is not None:
             right_text_end   = width - ROW_PANEL_RIGHT_MARGIN - right_width - ROW_GAP
             right_text_start = right_text_end - bold13.measure(right_label)
-            left_limit       = right_text_start - ROW_GAP
+            left_limit       = right_text_start - (ROW_LABEL_OFFSET if right_info is not None else 0) - ROW_GAP
         else:
             right_text_end   = width - ROW_PANEL_RIGHT_MARGIN - right_width
             left_limit       = width - ROW_PANEL_RIGHT_MARGIN
@@ -5279,7 +5280,9 @@ class App():
             App.place_left(left_info, left_text_start - ROW_LABEL_OFFSET, row)
 
         left_value_start = left_text_end + ROW_GAP
-        left_width       = min(left_width, max(ROW_MIN_VALUE_WIDTH, int(left_limit - left_value_start)))
+        available        = int(left_limit - left_value_start)
+        if available < left_width > 0:
+            App.resize_value_widget(left_widget, max(ROW_MIN_VALUE_WIDTH, available))
         App.place_left(left_widget, left_value_start, row)
 
         if right_label is not None:
@@ -5288,12 +5291,21 @@ class App():
             App.place_left(right_widget, right_text_end + ROW_GAP, row)
 
     @staticmethod
-    def place_single_row(row: float, left_widget, left_width: int, left_info = None) -> None:
-        # Rows with one value (AI model, sharpening, threads, deinterlace) keep the
-        # value right-aligned so the column of menus stays straight.
+    def resize_value_widget(widget, width: int) -> None:
+        # CTk widgets accept a post-construction width; the frame wrapper of a menu
+        # is sized from its menu, so both are resized to keep the border aligned.
+        widget.configure(width = width)
+        master = widget.master
+        if master is not None and isinstance(master, CTkFrame):
+            master.configure(width = width + 2)
+
+    @staticmethod
+    def place_single_row(row: float, left_widget, left_info = None) -> None:
+        # Rows with one value (AI model, sharpening, threads, deinterlace, output
+        # path) keep that value right-aligned so the column of menus stays straight.
         if left_info is not None:
             App.place_left(left_info, COL_INFO_L * APP_DESIGN_WIDTH - ROW_INFO_MIN_WIDTH / 2, row)
-        App.place_left(left_widget, APP_DESIGN_WIDTH - ROW_PANEL_RIGHT_MARGIN - left_width, row)
+        left_widget.place(relx = 1.0, x = -ROW_PANEL_RIGHT_MARGIN, rely = row, anchor = "e")
 
     @staticmethod
     def create_option_menu(
