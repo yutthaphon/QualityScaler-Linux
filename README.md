@@ -99,7 +99,7 @@ QualityScaler is completely written in Python, from backend to frontend.
 - Python 3.10 – 3.13 with `venv` (`sudo apt install python3 python3-venv python3-tk`)
 - FFmpeg 6 or newer (`sudo apt install ffmpeg`)
 - NVIDIA driver for GPU inference (`nvidia-smi` must work); CPU inference works without it
-- AI models downloaded into `AI-onnx/` (same files as the Windows build)
+- AI models: shipped in `AI-onnx/` and cloned with the repository (~120 MB)
 
 **Getting started**
 
@@ -107,8 +107,7 @@ QualityScaler is completely written in Python, from backend to frontend.
 git clone https://github.com/yutthaphon/QualityScaler-Linux.git
 cd QualityScaler-Linux
 
-# AI models (the .onnx files are not stored in git)
-#   place BSRGANx2_fp16.onnx, ..., IRCNN_Lx1_fp16.onnx in AI-onnx/
+# The .onnx models are committed in AI-onnx/ and arrive with the clone.
 
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
@@ -147,13 +146,11 @@ Build a single-file binary with `tools/build-linux.sh` (needs `requirements-linu
 **Prerequisites**
 - [Python](https://www.python.org/downloads/) installed on your PC
 - [VSCode](https://code.visualstudio.com/) installed on your PC
-- [AI models](https://gofile.io/d/b4Ds9u) downloaded
 - [ffmpeg.exe](https://www.gyan.dev/ffmpeg/builds/) downloaded (release build > ffmpeg-release-essentials.7z)
 
 **Getting started**
 - Download the project on your PC (green button Code > Download ZIP)
-- Extract the project from the .zip
-- Extract the AI models files in the `/AI-onnx` folder
+- Extract the project from the .zip (the `.onnx` models are already inside `AI-onnx/`)
 - Extract `ffmpeg.exe` in the `/Assets` folder
 - Open the project with VSCode (drag & drop the project directory onto VSCode)
 - Click on `QualityScaler.py` in the left sidebar (VSCode will ask to install the Python extension)

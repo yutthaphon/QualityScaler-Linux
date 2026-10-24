@@ -10,9 +10,8 @@ dist/
 .venv/
 venv/
 
-# Runtime assets (large binaries, downloaded per machine)
+# Runtime assets (platform binaries, downloaded per machine)
 Assets/*.exe
 Assets/ffmpeg
 Assets/ffprobe
 Assets/ffplay
-AI-onnx/*.onnx
