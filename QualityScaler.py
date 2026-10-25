@@ -41,7 +41,8 @@ from os import (
     fdopen   as os_fdopen,
     open     as os_open,
     O_WRONLY as os_O_WRONLY,
-    O_CREAT  as os_O_CREAT
+    O_CREAT  as os_O_CREAT,
+    O_TRUNC  as os_O_TRUNC
 )
 
 from os.path import (
@@ -257,6 +258,8 @@ AI_models_list = (
 
 zoom_option_list       = [ "50%", "75%", "100%", "125%", "150%", "175%" ]
 AI_multithreading_list = [ "OFF", "2 threads", "4 threads", "6 threads", "8 threads"]
+# QS_PATCH_CONCURRENT: files processed at the same time by one program instance
+concurrency_list      = [ "OFF", "2 tasks", "3 tasks" ]
 sharpening_list        = [ "OFF", "Low", "High" ]
 gpus_list              = [ "No GPU found" ]  # placeholder default, replaced at runtime by the detected GPUs
 keep_frames_list       = [ "OFF", "ON" ]
@@ -387,6 +390,7 @@ class UserPreferences:
     app_zoom:             str = "100%"
     ai_model:             str = AI_models_list[0]
     ai_multithreading:    str = AI_multithreading_list[0]
+    concurrency:          str = concurrency_list[0]
     gpu:                  str = gpus_list[0]
     keep_frames:          bool = True
     deinterlace:          str = deinterlace_list[0]
@@ -422,6 +426,7 @@ class ProcessingConfig:
     selected_image_extension:   str
     selected_video_extension:   str
     selected_video_codec:       str
+    selected_concurrency:       int = 1
 
 
 @dataclass
@@ -2231,6 +2236,7 @@ def start_upscale(processing_config):
         print(f"    Selected AI model: {processing_config.selected_AI_model}")
         print(f"    Sharpening amount: {processing_config.selected_sharpening_amount}")
         print(f"    AI multithreading: {processing_config.selected_AI_multithreading}")
+        print(f"    Concurrent tasks: {processing_config.selected_concurrency}")
         print(f"    Selected GPU: {processing_config.selected_gpu}")
         print(f"    Tiles resolution for selected GPU VRAM: {processing_config.tiles_resolution}x{processing_config.tiles_resolution}px")
         print(f"    Selected image output extension: {processing_config.selected_image_extension}")
@@ -2276,6 +2282,7 @@ def start_upscale(processing_config):
                 processing_config.selected_image_extension,
                 processing_config.selected_video_extension,
                 processing_config.selected_video_codec,
+                processing_config.selected_concurrency,
             )
         )
         prevent_sleep()
@@ -2283,6 +2290,114 @@ def start_upscale(processing_config):
 
         app_state.status_thread = Thread(target=check_upscale_steps, name="upscale-status", daemon=True)
         app_state.status_thread.start()
+
+def _run_file_batch(
+        process_status_q,
+        video_frames_and_info_q,
+        event_stop_upscale_process,
+        process_log_q,
+        file_list:                  list[str],
+        first_file_number:          int,
+        source_root,
+        selected_output_path,
+        selected_AI_model,
+        selected_AI_multithreading: int,
+        input_resize_factor:        float,
+        output_resize_factor:       float,
+        selected_gpu,
+        use_nvidia_deinterlace:     bool,
+        tiles_resolution:           int,
+        selected_sharpening_amount: float,
+        selected_keep_frames:       bool,
+        selected_deinterlace:       str,
+        selected_target_resolution: str,
+        selected_target_ratio:      str,
+        selected_image_extension:   str,
+        selected_video_extension:   str,
+        selected_video_codec:       str,
+        ) -> None:
+    # QS_PATCH_CONCURRENT: one worker's share of the queue. Runs inline when
+    # concurrency is OFF, or inside a child process when it is on.
+    if video_frames_and_info_q is None:
+        # A Manager proxy, not a raw Queue: raw queues can only reach a Pool
+        # worker through inheritance, and spawn has no inheritance to offer.
+        video_frames_and_info_q = multiprocessing_Manager().Queue(maxsize=64)
+    configure_realtime_logging(process_log_q)
+
+    try:
+        AI_instance_for_images = None
+
+        how_many_files = len(file_list)
+        for _index in range(how_many_files):
+            if event_stop_upscale_process.is_set(): return
+            
+            file_path   = file_list[_index]
+            source_key = get_file_cache_key(file_path)
+            file_number = first_file_number + _index
+
+            # QS_PATCH_BATCH_CONTINUE: one bad file must not end the whole run.
+            try:
+                if not os_path_exists(file_path):
+                    raise FileNotFoundError(f"File not found (moved, renamed or deleted?): {file_path}")
+
+                if check_if_file_is_video(file_path):
+                    upscale_video(
+                        process_status_q            = process_status_q,
+                        video_frames_and_info_q     = video_frames_and_info_q,
+                        event_stop_upscale_process  = event_stop_upscale_process,
+                        video_path                  = file_path, 
+                        file_number                 = file_number,
+                        selected_output_path        = selected_output_path, 
+                        selected_AI_model           = selected_AI_model, 
+                        selected_sharpening_amount  = selected_sharpening_amount,
+                        selected_AI_multithreading  = selected_AI_multithreading,
+                        selected_gpu                = selected_gpu,
+                        use_nvidia_deinterlace    = use_nvidia_deinterlace,
+                        input_resize_factor         = input_resize_factor,
+                        output_resize_factor        = output_resize_factor,
+                        tiles_resolution            = tiles_resolution,
+                        selected_video_extension    = selected_video_extension,
+                        selected_video_codec        = selected_video_codec,
+                        selected_keep_frames        = selected_keep_frames,
+                        selected_deinterlace        = selected_deinterlace,
+                        selected_target_resolution  = selected_target_resolution,
+                        selected_target_ratio       = selected_target_ratio,
+                        source_root                = source_root,
+                        process_log_q            = process_log_q,
+                    )
+                else:
+                    if AI_instance_for_images is None:
+                        AI_instance_for_images = AI_upscale(selected_AI_model, selected_gpu, input_resize_factor, tiles_resolution)
+                
+                    upscale_image(
+                        process_status_q           = process_status_q,
+                        image_path                 = file_path, 
+                        file_number                = file_number,
+                        selected_output_path       = selected_output_path,
+                        AI_instance                = AI_instance_for_images,
+                        selected_AI_model          = selected_AI_model,
+                        selected_image_extension   = selected_image_extension,
+                        input_resize_factor        = input_resize_factor,
+                        output_resize_factor       = output_resize_factor,
+                        selected_target_resolution = selected_target_resolution,
+                        selected_target_ratio      = selected_target_ratio,
+                        selected_sharpening_amount = selected_sharpening_amount,
+                        source_root                = source_root,
+                    )
+
+                if check_if_file_is_video(file_path) and not event_stop_upscale_process.is_set():
+                    process_status_q.put(dict(path=file_path, source_key=source_key))
+
+            except Exception as file_error:
+                if event_stop_upscale_process.is_set():
+                    raise
+                write_process_status(process_status_q, f"{ERROR_STATUS} [{file_number}] {os_path_basename(file_path)}: {file_error}")
+                print(f"[Batch] file {file_number} failed, continuing: {file_error}", flush=True)
+                continue
+
+    except Exception as exception:
+        error_message = str(exception)
+        write_process_status(process_status_q, f"{ERROR_STATUS} {error_message}")
 
 def upscale_orchestrator(
         process_status_q:           multiprocessing_Queue,
@@ -2308,78 +2423,68 @@ def upscale_orchestrator(
         selected_image_extension:   str,
         selected_video_extension:   str,
         selected_video_codec:       str,
+        selected_concurrency:       int = 1,
         ) -> None:
     configure_realtime_logging(process_log_q)
 
-
     try:
-        AI_instance_for_images = None
+        tasks = max(1, min(int(selected_concurrency or 1), len(selected_file_list)))
 
-        how_many_files = len(selected_file_list)
-        for file_number in range(how_many_files):
-            if event_stop_upscale_process.is_set(): return
-            
-            file_path   = selected_file_list[file_number]
-            source_key = get_file_cache_key(file_path)
-            file_number = file_number + 1
+        if tasks <= 1 or len(selected_file_list) <= 1:
+            _run_file_batch(
+                process_status_q, video_frames_and_info_q, event_stop_upscale_process, process_log_q,
+                selected_file_list, 1, source_root, selected_output_path, selected_AI_model,
+                selected_AI_multithreading, input_resize_factor, output_resize_factor, selected_gpu,
+                use_nvidia_deinterlace, tiles_resolution, selected_sharpening_amount,
+                selected_keep_frames, selected_deinterlace, selected_target_resolution,
+                selected_target_ratio, selected_image_extension, selected_video_extension,
+                selected_video_codec,
+            )
+        else:
+            threads_per_task = max(1, int(selected_AI_multithreading) // tasks)
+            print(f"[Concurrent] {tasks} tasks x {threads_per_task} threads "
+                  f"= {tasks * threads_per_task} workers", flush=True)
+            write_process_status(process_status_q,
+                                 f"Concurrent: {tasks} tasks x {threads_per_task} threads")
 
-            if not os_path_exists(file_path):
-                raise FileNotFoundError(f"File not found (moved, renamed or deleted?): {file_path}")
-
-            if check_if_file_is_video(file_path):
-                upscale_video(
-                    process_status_q            = process_status_q,
-                    video_frames_and_info_q     = video_frames_and_info_q,
-                    event_stop_upscale_process  = event_stop_upscale_process,
-                    video_path                  = file_path, 
-                    file_number                 = file_number,
-                    selected_output_path        = selected_output_path, 
-                    selected_AI_model           = selected_AI_model, 
-                    selected_sharpening_amount  = selected_sharpening_amount,
-                    selected_AI_multithreading  = selected_AI_multithreading,
-                    selected_gpu                = selected_gpu,
-                    use_nvidia_deinterlace    = use_nvidia_deinterlace,
-                    input_resize_factor         = input_resize_factor,
-                    output_resize_factor        = output_resize_factor,
-                    tiles_resolution            = tiles_resolution,
-                    selected_video_extension    = selected_video_extension,
-                    selected_video_codec        = selected_video_codec,
-                    selected_keep_frames        = selected_keep_frames,
-                    selected_deinterlace        = selected_deinterlace,
-                    selected_target_resolution  = selected_target_resolution,
-                    selected_target_ratio       = selected_target_ratio,
-                    source_root                = source_root,
-                    process_log_q            = process_log_q,
+            children = []
+            first_file_number = 1
+            for chunk in (list(c) for c in numpy_array_split(selected_file_list, tasks)):
+                if not chunk:
+                    continue
+                child = multiprocessing_Process(
+                    target = _run_file_batch,
+                    args = (
+                        process_status_q, None, event_stop_upscale_process, process_log_q,
+                        chunk, first_file_number, source_root, selected_output_path,
+                        selected_AI_model, threads_per_task, input_resize_factor,
+                        output_resize_factor, selected_gpu, use_nvidia_deinterlace,
+                        tiles_resolution, selected_sharpening_amount, selected_keep_frames,
+                        selected_deinterlace, selected_target_resolution, selected_target_ratio,
+                        selected_image_extension, selected_video_extension, selected_video_codec,
+                    ),
                 )
-            else:
-                if AI_instance_for_images is None:
-                    AI_instance_for_images = AI_upscale(selected_AI_model, selected_gpu, input_resize_factor, tiles_resolution)
-                
-                upscale_image(
-                    process_status_q           = process_status_q,
-                    image_path                 = file_path, 
-                    file_number                = file_number,
-                    selected_output_path       = selected_output_path,
-                    AI_instance                = AI_instance_for_images,
-                    selected_AI_model          = selected_AI_model,
-                    selected_image_extension   = selected_image_extension,
-                    input_resize_factor        = input_resize_factor,
-                    output_resize_factor       = output_resize_factor,
-                    selected_target_resolution = selected_target_resolution,
-                    selected_target_ratio      = selected_target_ratio,
-                    selected_sharpening_amount = selected_sharpening_amount,
-                    source_root                = source_root,
-                )
+                child.start()
+                children.append(child)
+                first_file_number += len(chunk)
 
-            if check_if_file_is_video(file_path) and not event_stop_upscale_process.is_set():
-                process_status_q.put(dict(path=file_path, source_key=source_key))
+            for child in children:
+                while child.is_alive() and not event_stop_upscale_process.is_set():
+                    child.join(timeout=0.5)
+            for child in children:
+                if child.is_alive():
+                    child.join(timeout=30)
+                if child.is_alive():
+                    child.terminate()
+                    child.join(timeout=10)
 
-        if not event_stop_upscale_process.is_set(): write_process_status(process_status_q, f"{COMPLETED_STATUS}")
+        if not event_stop_upscale_process.is_set():
+            write_process_status(process_status_q, f"{COMPLETED_STATUS}")
 
     except Exception as exception:
         error_message = str(exception)
         write_process_status(process_status_q, f"{ERROR_STATUS} {error_message}")
- 
+
 # IMAGES
 
 def upscale_image(
@@ -2841,13 +2946,18 @@ def upscale_video(
 
     def encode_upscaled_video(process_status_q: multiprocessing_Queue, video_upscale_task: VideoUpscaleTask) -> None:
 
+        # QS_PATCH_ENCODE_ROBUST: the output folder may not exist yet.
+        _out_dir = os_path_dirname(video_upscale_task.video_output_path)
+        if _out_dir and not os_path_exists(_out_dir):
+            os_makedirs(_out_dir, mode=0o777, exist_ok=True)
+
         encoded_frame_count = [0]
 
         # Cleaning files from previous encoding
         delete_file(video_upscale_task.ffmpeg_txt_file_path)
 
         # Create a file .txt with all upscaled video frames paths || this file is essential
-        with os_fdopen(os_open(video_upscale_task.ffmpeg_txt_file_path, os_O_WRONLY | os_O_CREAT, 0o777), 'w', encoding="utf-8") as txt:
+        with os_fdopen(os_open(video_upscale_task.ffmpeg_txt_file_path, os_O_WRONLY | os_O_CREAT | os_O_TRUNC, 0o777), 'w', encoding="utf-8") as txt:
             for frame_path in video_upscale_task.upscaled_frame_paths:
                 if not os_path_exists(frame_path):
                     raise RuntimeError(f"Cannot encode: saved frame missing: {frame_path}")
@@ -2883,7 +2993,8 @@ def upscale_video(
                     "-c:v",        str(current_codec),
                     "-c:a",        "copy",
                     "-g",          str(video_upscale_task.video_fps),
-                    "-vf",         f"scale={video_upscale_task.target_width}:{video_upscale_task.target_height},format=yuv420p",
+                    # QS_PATCH_ENCODE_ROBUST: encoders reject odd dimensions
+                    "-vf",         f"scale={video_upscale_task.target_width & ~1}:{video_upscale_task.target_height & ~1},format=yuv420p",
                     "-color_range","tv",
                     "-movflags",   "+faststart",
                     "-b:v",        "50000k",
@@ -2911,6 +3022,12 @@ def upscale_video(
                 break
 
             except Exception as e:
+                # QS_PATCH_ENCODE_ROBUST: upstream swallowed ffmpeg's own message.
+                _errors = getattr(ffmpeg_process, "ffmpeg_errors", None) if ffmpeg_process else None
+                if _errors:
+                    print(f"[FFMPEG] {current_codec} stderr:", flush=True)
+                    for _line in _errors:
+                        print(f"    {_line}", flush=True)
                 if ffmpeg_process:
                     ffmpeg_process.kill()
                     try:
@@ -3857,6 +3974,12 @@ def get_current_ai_multithreading() -> int:
         return 1
     return int(app_state.preferences.ai_multithreading.split()[0])
 
+def get_current_concurrency() -> int:
+    # QS_PATCH_CONCURRENT: number of files handled at the same time
+    if app_state.preferences.concurrency == "OFF":
+        return 1
+    return int(app_state.preferences.concurrency.split()[0])
+
 def get_current_sharpening_amount() -> float:
     return {
         "OFF": 0,
@@ -4034,6 +4157,7 @@ def build_processing_config() -> Optional[ProcessingConfig]:
         selected_image_extension   = app_state.preferences.image_extension,
         selected_video_extension   = app_state.preferences.video_extension,
         selected_video_codec       = app_state.preferences.video_codec,
+        selected_concurrency       = get_current_concurrency(),
     )
 
 def missing_runtime_dependencies() -> list[str]:
@@ -4256,6 +4380,7 @@ def save_user_choices_in_json() -> None:
         "default_app_zoom":             app_state.preferences.app_zoom,
         "default_AI_model":             app_state.preferences.ai_model,
         "default_AI_multithreading":    app_state.preferences.ai_multithreading,
+        "default_concurrency":          app_state.preferences.concurrency,
         "default_gpu":                  app_state.preferences.gpu,
         "default_keep_frames":          "ON" if app_state.preferences.keep_frames else "OFF",
         "default_deinterlace":          app_state.preferences.deinterlace,
@@ -4288,6 +4413,7 @@ def load_user_preferences() -> UserPreferences:
             app_zoom             = json_data.get("default_app_zoom",             "100%"),
             ai_model             = json_data.get("default_AI_model",             AI_models_list[0]),
             ai_multithreading    = json_data.get("default_AI_multithreading",    AI_multithreading_list[0]),
+            concurrency          = json_data.get("default_concurrency",          concurrency_list[0]) if json_data.get("default_concurrency", concurrency_list[0]) in concurrency_list else concurrency_list[0],
             gpu                  = json_data.get("default_gpu",                  gpus_list[0]),
             keep_frames          = json_data.get("default_keep_frames",          keep_frames_list[1]) == "ON",
             deinterlace          = json_data.get("default_deinterlace",          deinterlace_list[0]) if json_data.get("default_deinterlace", deinterlace_list[0]) in deinterlace_list else deinterlace_list[0],
@@ -4600,10 +4726,30 @@ class App():
         row = ROW_AI_MULTITHREADING
         place_option_background(row)
 
-        info_button = App.create_info_button(open_info_AI_multithreading, "AI multithreading")
+        def open_info_concurrent():
+            option_list = [
+                " How many files this program works on at the same time.",
+                " Each task is a separate worker process with its own AI engine.",
+                " Threads per task = AI multithreading / tasks, so the total number of",
+                " workers stays the same: VRAM and GPU load do not grow with the task count.",
+                " While one task encodes its video the others keep upscaling, which fills",
+                " the idle time that a single task leaves between upscale and encode.",
+                " Log, output folder and resume work exactly as they do with one task.",
+            ]
+            open_info_messagebox("Concurrent tasks", "Process several files at the same time", option_list)
+
+        info_button = App.create_info_button(open_info_AI_multithreading, "Threads")
         option_menu = App.create_option_menu(App.select_AI_multithreading_from_menu, AI_multithreading_list, app_state.preferences.ai_multithreading)
 
-        App.place_single_row(row, option_menu, left_info = info_button)
+        concurrent_info = App.create_info_button(open_info_concurrent, "Concurrent")
+        concurrent_menu = App.create_option_menu(App.select_concurrency_from_menu, concurrency_list, app_state.preferences.concurrency)
+
+        App.place_row(
+            row,
+            "Threads", option_menu, 171,
+            "Concurrent", concurrent_menu, 111,
+            left_info = info_button, right_info = concurrent_info,
+        )
 
     @staticmethod
     def place_input_output_resolution_textboxs() -> None:
@@ -5125,6 +5271,11 @@ class App():
     @staticmethod
     def select_AI_multithreading_from_menu(selected_option: str) -> None:
         app_state.preferences.ai_multithreading = selected_option
+
+    @staticmethod
+    def select_concurrency_from_menu(selected_option: str) -> None:
+        # QS_PATCH_CONCURRENT
+        app_state.preferences.concurrency = selected_option
 
     @staticmethod
     def select_sharpening_from_menu(selected_option: str) -> None:
